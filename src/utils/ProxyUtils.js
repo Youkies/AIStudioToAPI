@@ -112,4 +112,99 @@ const getProxySummaryFromEnv = () => {
     }
 };
 
-module.exports = { getProxyBypassFromEnv, getProxySummaryFromEnv, parseProxyFromEnv };
+/**
+ * Parse the proxy an auth file carries for its own account.
+ *
+ * A Google session cookie is bound to the IP that minted it: replay it from a
+ * different network and Google voids it within hours. The uploader therefore
+ * records the proxy it logged in through inside the auth file, so this server
+ * browses as the same exit IP. Changing an account's proxy is then just a
+ * re-upload — no server-side list or mapping to keep in sync.
+ *
+ * Accepted shapes for `auth.proxy`:
+ *   "http://user:pass@host:port"          (string, any scheme)
+ *   "host:port:user:pass"                 (string, colon dump)
+ *   { server, username?, password? }      (object, Playwright-native)
+ *
+ * @param {Object} auth Parsed auth file contents
+ * @returns {Object|null} Playwright proxy config, or null when absent/unusable
+ */
+const parseProxyFromAuth = auth => {
+    const raw = auth?.proxy;
+    if (!raw) return null;
+
+    const bypass = getProxyBypassFromEnv();
+
+    if (typeof raw === "object") {
+        if (!raw.server) return null;
+        const proxy = { bypass, server: String(raw.server) };
+        if (raw.username) proxy.username = String(raw.username);
+        if (raw.password) proxy.password = String(raw.password);
+        return proxy;
+    }
+
+    const line = String(raw).trim();
+    if (!line) return null;
+
+    // Scheme form. socks5h is curl-only spelling — Firefox rejects it, and the
+    // difference (proxy-side DNS) is what socks5 does here anyway.
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(line)) {
+        try {
+            const u = new URL(line);
+            if (!u.hostname || !u.port) return null;
+            const scheme = u.protocol === "socks5h:" ? "socks5:" : u.protocol;
+            const proxy = { bypass, server: `${scheme}//${u.hostname}:${u.port}` };
+            if (u.username) proxy.username = decodeURIComponent(u.username);
+            if (u.password) proxy.password = decodeURIComponent(u.password);
+            return proxy;
+        } catch {
+            return null;
+        }
+    }
+
+    // user:pass@host:port
+    if (line.includes("@")) {
+        const at = line.lastIndexOf("@");
+        const auth_ = line.slice(0, at);
+        const addr = line.slice(at + 1);
+        const sep = auth_.indexOf(":");
+        const [host, port] = addr.split(":");
+        if (sep === -1 || !host || !port) return null;
+        return {
+            bypass,
+            password: auth_.slice(sep + 1),
+            server: `http://${host}:${port}`,
+            username: auth_.slice(0, sep),
+        };
+    }
+
+    // host:port[:user:pass]
+    const parts = line.split(":");
+    if (parts.length === 4) {
+        const [host, port, username, password] = parts;
+        if (!host || !port) return null;
+        return { bypass, password, server: `http://${host}:${port}`, username };
+    }
+    if (parts.length === 2 && parts[0] && parts[1]) {
+        return { bypass, server: `http://${parts[0]}:${parts[1]}` };
+    }
+    return null;
+};
+
+/**
+ * Render a proxy config for logs without leaking credentials.
+ * @param {Object} proxy Playwright proxy config
+ * @returns {string}
+ */
+const redactProxyServer = proxy => {
+    if (!proxy?.server) return "N/A";
+    return proxy.username ? `${_redactProxyCredentials(proxy.server)} (auth)` : String(proxy.server);
+};
+
+module.exports = {
+    getProxyBypassFromEnv,
+    getProxySummaryFromEnv,
+    parseProxyFromAuth,
+    parseProxyFromEnv,
+    redactProxyServer,
+};

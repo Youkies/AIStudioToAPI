@@ -10,7 +10,7 @@ const path = require("path");
 const { firefox } = require("playwright");
 const os = require("os");
 
-const { parseProxyFromEnv } = require("../utils/ProxyUtils");
+const { parseProxyFromAuth, parseProxyFromEnv, redactProxyServer } = require("../utils/ProxyUtils");
 const StickyProxyManager = require("../utils/StickyProxyManager");
 const {
     AuthExpiredError,
@@ -2048,16 +2048,28 @@ class BrowserManager {
             // between concurrent init/reconnect operations on different accounts
             this._wsInitState.set(authIndex, { failed: false, success: false });
 
-            const stickyProxy = this.stickyProxyManager.getProxyForAuth(authIndex);
-            const proxyConfig = stickyProxy ? stickyProxy.proxy : parseProxyFromEnv();
-            if (stickyProxy) {
-                this.logger.info(
-                    `[Context#${authIndex}] Using sticky proxy for account "${stickyProxy.accountKey}": ${stickyProxy.display}`
-                );
-            }
             const storageStateObject = this.authSource.getAuth(authIndex);
             if (!storageStateObject) {
                 throw new Error(`Failed to get or parse auth source for index ${authIndex}.`);
+            }
+
+            // Proxy precedence: the auth file's own `proxy` field wins. Google ties a
+            // session cookie to the IP that signed it, so a cookie minted behind the
+            // uploader's proxy dies within hours when replayed from the server's IP.
+            // Shipping the proxy inside the auth file keeps issuing and using IP
+            // identical, and lets the uploader rebind a proxy by re-uploading alone.
+            const authProxy = parseProxyFromAuth(storageStateObject);
+            const stickyProxy = authProxy ? null : this.stickyProxyManager.getProxyForAuth(authIndex);
+            const proxyConfig = authProxy || (stickyProxy ? stickyProxy.proxy : parseProxyFromEnv());
+            if (authProxy) {
+                this.logger.info(
+                    `[Context#${authIndex}] Using auth-file proxy for account ` +
+                        `"${storageStateObject.accountName || `auth-${authIndex}`}": ${redactProxyServer(authProxy)}`
+                );
+            } else if (stickyProxy) {
+                this.logger.info(
+                    `[Context#${authIndex}] Using sticky proxy for account "${stickyProxy.accountKey}": ${stickyProxy.display}`
+                );
             }
 
             // Viewport Randomization
