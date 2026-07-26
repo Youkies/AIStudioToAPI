@@ -44,6 +44,7 @@ class BrowserManager {
 
         // Context pool state tracking
         this.initializingContexts = new Set(); // Indices currently being initialized in background
+        this._pendingRebalance = null; // Debounce handle: coalesces bursts of rebalance requests
         this.abortedContexts = new Set(); // Indices that should be aborted during background init
         this._backgroundPreloadTask = null; // Current background preload task promise (only one at a time)
         this._backgroundPreloadAbort = false; // Flag to signal background task to abort
@@ -1921,7 +1922,42 @@ class BrowserManager {
      * Rebalance context pool after account changes
      * Removes excess contexts and starts missing ones in background
      */
-    async rebalanceContextPool() {
+    /**
+     * Coalesces bursts of rebalance requests into a single run.
+     *
+     * Every auth upload triggers a rebalance, so pushing N accounts back-to-back used to
+     * start N preload rounds; each round spawns browser contexts, and the overlapping
+     * rounds drove the container into an OOM kill mid-upload (observed as SSL EOF on the
+     * uploading client). Callers still get a promise that resolves once a rebalance
+     * covering their request has finished.
+     */
+    rebalanceContextPool() {
+        const debounceMs = Number(this.config?.rebalanceDebounceMs);
+        const waitMs = Number.isFinite(debounceMs) && debounceMs >= 0 ? debounceMs : 3000;
+
+        if (waitMs === 0) return this._rebalanceContextPoolNow();
+
+        if (this._pendingRebalance) return this._pendingRebalance.promise;
+
+        let resolveOuter;
+        const promise = new Promise(resolve => {
+            resolveOuter = resolve;
+        });
+        const timer = setTimeout(() => {
+            this._pendingRebalance = null;
+            this._rebalanceContextPoolNow()
+                .catch(error => {
+                    this.logger.error(`[ContextPool] Debounced rebalance failed: ${error.message}`);
+                })
+                .finally(resolveOuter);
+        }, waitMs);
+        if (timer.unref) timer.unref();
+
+        this._pendingRebalance = { promise, timer };
+        return promise;
+    }
+
+    async _rebalanceContextPoolNow() {
         const maxContexts = this.config.maxContexts;
         // maxContexts === 0 means unlimited pool size
         const isUnlimited = maxContexts === 0;

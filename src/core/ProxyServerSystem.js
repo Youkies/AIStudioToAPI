@@ -17,6 +17,7 @@ const { URL } = require("url");
 
 const LoggingService = require("../utils/LoggingService");
 const AuthSource = require("../auth/AuthSource");
+const AccountPool = require("../auth/AccountPool");
 const BrowserManager = require("./BrowserManager");
 const ConnectionRegistry = require("./ConnectionRegistry");
 const RequestHandler = require("./RequestHandler");
@@ -38,6 +39,7 @@ class ProxyServerSystem extends EventEmitter {
 
         this.authSource = new AuthSource(this.logger);
         this.browserManager = new BrowserManager(this.logger, this.config, this.authSource);
+        this.accountPool = new AccountPool(this.logger, this.config, this.authSource);
         this.usageStatsService = new UsageStatsService(
             this.authSource,
             this.logger,
@@ -105,9 +107,14 @@ class ProxyServerSystem extends EventEmitter {
             this.logger,
             this.browserManager,
             this.config,
-            this.authSource
+            this.authSource,
+            this.accountPool
         );
         this.browserManager.setSystemBusyProvider(() => this.requestHandler?.isSystemBusy === true);
+        this.accountPool.setWarmProbe(authIndex => {
+            const ctx = this.browserManager.contexts.get(authIndex);
+            return Boolean(ctx) && Boolean(this.connectionRegistry.getConnectionByAuth(authIndex, false));
+        });
 
         this.httpServer = null;
         this.wsServer = null;

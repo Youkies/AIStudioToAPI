@@ -9,10 +9,18 @@
  * Request Handler Module (Refactored)
  * Main request handler that coordinates between other modules
  */
+const { AsyncLocalStorage } = require("async_hooks");
+
 const AuthSwitcher = require("../auth/AuthSwitcher");
 const FormatConverter = require("./FormatConverter");
 const { isUserAbortedError } = require("../utils/CustomErrors");
 const { QueueClosedError, QueueTimeoutError } = require("../utils/MessageQueue");
+
+/**
+ * Carries the account assigned to the in-flight request across every await boundary in
+ * its call chain, so concurrent requests never observe each other's account.
+ */
+const REQUEST_SCOPE = new AsyncLocalStorage();
 
 const WS_RECONNECT_WAIT_MS = 130000;
 const WS_CONNECTION_READY_TIMEOUT_MS = 10000;
@@ -24,13 +32,14 @@ const DEFAULT_TIMEOUTS = {
 };
 
 class RequestHandler {
-    constructor(serverSystem, connectionRegistry, logger, browserManager, config, authSource) {
+    constructor(serverSystem, connectionRegistry, logger, browserManager, config, authSource, accountPool = null) {
         this.serverSystem = serverSystem;
         this.connectionRegistry = connectionRegistry;
         this.logger = logger;
         this.browserManager = browserManager;
         this.config = config;
         this.authSource = authSource;
+        this.accountPool = accountPool;
 
         // Initialize sub-modules
         this.authSwitcher = new AuthSwitcher(logger, config, authSource, browserManager);
@@ -45,9 +54,109 @@ class RequestHandler {
         };
     }
 
-    // Delegate properties to AuthSwitcher
+    /**
+     * Per-request account binding.
+     *
+     * Every read of `currentAuthIndex` below — there are dozens, across retries, queue
+     * creation and switch handling — resolves to the account this particular request was
+     * assigned, not to a process-wide variable another concurrent request may have moved
+     * underneath it. Without this, request A could create its message queue against the
+     * account request B just switched to, and receive B's responses.
+     *
+     * Falls back to the global AuthSwitcher value outside a scoped request, which keeps
+     * warm-up, recovery and single-account mode on their original code path.
+     */
     get currentAuthIndex() {
+        const scoped = REQUEST_SCOPE.getStore();
+        if (scoped && Number.isInteger(scoped.authIndex) && scoped.authIndex >= 0) {
+            return scoped.authIndex;
+        }
         return this.authSwitcher.currentAuthIndex;
+    }
+
+    /**
+     * Run `fn` bound to one account taken from the pool, releasing the slot afterwards.
+     * Returns null when pool scheduling is off so callers keep the legacy behaviour.
+     */
+    async _withPooledAccount(model, fn) {
+        if (!this.accountPool || this.config.poolScheduling === false) {
+            return { pooled: false, result: await fn(null) };
+        }
+
+        const authIndex = await this.accountPool.acquire(model);
+        const store = { authIndex, model };
+        try {
+            const result = await REQUEST_SCOPE.run(store, () => fn(authIndex));
+            return { pooled: true, result };
+        } finally {
+            this.accountPool.release(authIndex);
+        }
+    }
+
+    /** Model name for pool bookkeeping; cooldown is tracked per (account, model). */
+    _poolModelKey(req) {
+        const fromBody = req?.body?.model;
+        if (typeof fromBody === "string" && fromBody.trim()) return fromBody.trim();
+        const fromPath = this._extractModelFromPath(req?.path || "");
+        return fromPath || "*";
+    }
+
+    /**
+     * Wraps a generative entry point so the request runs on an account leased from the
+     * pool. Failures are reported back to the pool so a credential that is rejected
+     * (401/403) stops receiving traffic immediately, while transient upstream errors
+     * only take an account out after they repeat.
+     */
+    async _runPooled(handlerName, req, res) {
+        const model = this._poolModelKey(req);
+        try {
+            await this._withPooledAccount(model, async authIndex => {
+                if (authIndex !== null) {
+                    this.logger.info(
+                        `[Pool] Request routed to account #${authIndex} (in-flight ${this.accountPool.getInFlight(authIndex)}/${this.accountPool.maxPerAccount}, model ${model})`
+                    );
+                }
+                const statusBefore = res.statusCode;
+                await this[handlerName](req, res);
+                if (authIndex !== null) {
+                    const status = Number(res.statusCode ?? statusBefore);
+                    if (Number.isFinite(status) && status >= 400) {
+                        this.accountPool.recordFailure(authIndex, model, status);
+                    } else {
+                        this.accountPool.recordSuccess(authIndex, model);
+                    }
+                }
+            });
+        } catch (error) {
+            if (error?.statusCode === 429 && !res.headersSent) {
+                this.logger.warn(`[Pool] Rejecting request: ${error.message}`);
+                res.status(429).json({
+                    error: {
+                        code: "accounts_busy",
+                        message: error.message,
+                        type: "rate_limit_error",
+                    },
+                });
+                return;
+            }
+            throw error;
+        }
+    }
+
+    async processRequest(req, res) {
+        return this._runPooled("_unpooled_processRequest", req, res);
+    }
+
+    async processOpenAIRequest(req, res) {
+        return this._runPooled("_unpooled_processOpenAIRequest", req, res);
+    }
+
+    async processOpenAIResponseRequest(req, res) {
+        return this._runPooled("_unpooled_processOpenAIResponseRequest", req, res);
+    }
+
+    async processClaudeRequest(req, res) {
+        return this._runPooled("_unpooled_processClaudeRequest", req, res);
     }
 
     get failureCount() {
@@ -888,7 +997,7 @@ class RequestHandler {
     }
 
     // Process standard Google API requests
-    async processRequest(req, res) {
+    async _unpooled_processRequest(req, res) {
         const requestId = this._generateRequestId();
         this._startTrackedRequest(requestId, req, {
             apiFormat: "gemini",
@@ -1131,7 +1240,7 @@ class RequestHandler {
     }
 
     // Process OpenAI format requests
-    async processOpenAIRequest(req, res) {
+    async _unpooled_processOpenAIRequest(req, res) {
         const requestId = this._generateRequestId();
         this._startTrackedRequest(requestId, req, {
             apiFormat: "openai",
@@ -1479,7 +1588,7 @@ class RequestHandler {
     }
 
     // Process OpenAI Response API format requests
-    async processOpenAIResponseRequest(req, res) {
+    async _unpooled_processOpenAIResponseRequest(req, res) {
         const requestId = this._generateRequestId();
         this._startTrackedRequest(requestId, req, {
             apiFormat: "response_api",
@@ -1905,7 +2014,7 @@ class RequestHandler {
     }
 
     // Process Claude API format requests
-    async processClaudeRequest(req, res) {
+    async _unpooled_processClaudeRequest(req, res) {
         const requestId = this._generateRequestId();
         this._startTrackedRequest(requestId, req, {
             apiFormat: "claude",

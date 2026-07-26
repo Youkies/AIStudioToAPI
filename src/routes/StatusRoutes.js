@@ -1029,6 +1029,8 @@ class StatusRoutes {
                 logMaxCount: limit,
                 maxContexts: config.maxContexts,
                 maxRetries: config.maxRetries,
+                pool: this.serverSystem.accountPool?.getStats() ?? null,
+                poolScheduling: config.poolScheduling !== false,
                 rotationIndicesRaw: rotationIndices,
                 safetySettingsThreshold: config.safetySettingsThreshold,
                 streamingMode: config.streamingMode,

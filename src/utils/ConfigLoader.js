@@ -20,10 +20,13 @@ class ConfigLoader {
 
     loadConfiguration() {
         const config = {
+            accountCooldownMs: 300000,
+            acquireTimeoutMs: 60000,
             apiKeys: [],
             apiKeySource: "Not set",
             browserExecutablePath: null,
             checkUpdate: true,
+            cooldownsBeforeDead: 3,
             enableAuthUpdate: true,
             enableUsageStats: true,
             failureThreshold: 3,
@@ -36,9 +39,13 @@ class ConfigLoader {
             httpPort: 7860,
             immediateSwitchStatusCodes: [429, 503],
             maxContexts: 1,
+            maxRequestsPerAccount: 3,
             maxRetries: 3,
+            poolScheduling: true,
+            rebalanceDebounceMs: 3000,
             retryDelay: 2000,
             safetySettingsThreshold: "OFF",
+            softFailuresBeforeCooldown: 3,
             streamingMode: "real",
             streamTimeoutMs: 60000,
             switchOnUses: 40,
@@ -91,6 +98,35 @@ class ConfigLoader {
         if (process.env.MAX_CONTEXTS) {
             const parsed = parseInt(process.env.MAX_CONTEXTS, 10);
             config.maxContexts = Number.isFinite(parsed) ? Math.max(0, parsed) : config.maxContexts;
+        }
+        if (process.env.MAX_REQUESTS_PER_ACCOUNT) {
+            const parsed = parseInt(process.env.MAX_REQUESTS_PER_ACCOUNT, 10);
+            config.maxRequestsPerAccount = Number.isFinite(parsed) ? Math.max(1, parsed) : config.maxRequestsPerAccount;
+        }
+        if (process.env.ACCOUNT_COOLDOWN_MS) {
+            const parsed = parseInt(process.env.ACCOUNT_COOLDOWN_MS, 10);
+            config.accountCooldownMs = Number.isFinite(parsed) ? Math.max(0, parsed) : config.accountCooldownMs;
+        }
+        if (process.env.SOFT_FAILURES_BEFORE_COOLDOWN) {
+            const parsed = parseInt(process.env.SOFT_FAILURES_BEFORE_COOLDOWN, 10);
+            config.softFailuresBeforeCooldown = Number.isFinite(parsed)
+                ? Math.max(1, parsed)
+                : config.softFailuresBeforeCooldown;
+        }
+        if (process.env.COOLDOWNS_BEFORE_DEAD) {
+            const parsed = parseInt(process.env.COOLDOWNS_BEFORE_DEAD, 10);
+            config.cooldownsBeforeDead = Number.isFinite(parsed) ? Math.max(1, parsed) : config.cooldownsBeforeDead;
+        }
+        if (process.env.ACQUIRE_TIMEOUT_MS) {
+            const parsed = parseInt(process.env.ACQUIRE_TIMEOUT_MS, 10);
+            config.acquireTimeoutMs = Number.isFinite(parsed) ? Math.max(1000, parsed) : config.acquireTimeoutMs;
+        }
+        if (process.env.POOL_SCHEDULING) {
+            config.poolScheduling = process.env.POOL_SCHEDULING.toLowerCase() !== "false";
+        }
+        if (process.env.REBALANCE_DEBOUNCE_MS) {
+            const parsed = parseInt(process.env.REBALANCE_DEBOUNCE_MS, 10);
+            config.rebalanceDebounceMs = Number.isFinite(parsed) ? Math.max(0, parsed) : config.rebalanceDebounceMs;
         }
         if (process.env.CAMOUFOX_EXECUTABLE_PATH) config.browserExecutablePath = process.env.CAMOUFOX_EXECUTABLE_PATH;
         if (process.env.API_KEYS) {
@@ -209,6 +245,20 @@ class ConfigLoader {
         this.logger.info(`  Auto Update Auth: ${config.enableAuthUpdate}`);
         this.logger.info(`  Usage Stats: ${config.enableUsageStats}`);
         this.logger.info(`  Max Contexts: ${config.maxContexts === 0 ? "Unlimited" : config.maxContexts}`);
+        this.logger.info(
+            `  Pool Scheduling: ${
+                config.poolScheduling !== false
+                    ? `Enabled (max ${config.maxRequestsPerAccount} concurrent requests/account, ` +
+                      `queue wait ${Math.round(config.acquireTimeoutMs / 1000)}s)`
+                    : "Disabled (legacy single-account rotation)"
+            }`
+        );
+        this.logger.info(
+            `  Account Cooldown: ${Math.round(config.accountCooldownMs / 1000)}s ` +
+                `(401/403 immediately, ${config.softFailuresBeforeCooldown} soft failures otherwise; ` +
+                `dead after ${config.cooldownsBeforeDead} rounds)`
+        );
+        this.logger.info(`  Rebalance Debounce: ${config.rebalanceDebounceMs}ms`);
         this.logger.info(
             `  Usage-based Switch Threshold: ${
                 config.switchOnUses > 0 ? `Switch after every ${config.switchOnUses} requests` : "Disabled"
