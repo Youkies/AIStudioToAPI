@@ -125,6 +125,30 @@ async function testWarmPreferredOverCold() {
     console.log("  ok  prefers warm accounts to avoid cold starts");
 }
 
+async function testWarmUsedExclusivelyUntilSaturated() {
+    // Mirrors production: a rotation far larger than the warm context pool.
+    const rotation = Array.from({ length: 20 }, (_, i) => i + 1);
+    const warm = new Set([3, 7]);
+    const pool = makePool({ maxRequestsPerAccount: 3 }, rotation);
+    pool.setWarmProbe(idx => warm.has(idx));
+
+    // Every warm slot (2 accounts x 3) must be consumed before any cold account is used;
+    // sending traffic to a cold account early stalls it behind a browser cold start.
+    const picks = [];
+    for (let i = 0; i < 6; i++) picks.push(await pool.acquire("m"));
+    assert.ok(
+        picks.every(p => warm.has(p)),
+        `expected only warm accounts while capacity remains, got ${JSON.stringify(picks)}`
+    );
+    assert.strictEqual(pool.getInFlight(3), 3);
+    assert.strictEqual(pool.getInFlight(7), 3);
+
+    // Only once the warm set is full may a cold account take the overflow.
+    const overflow = await pool.acquire("m");
+    assert.ok(!warm.has(overflow), "overflow must fall through to a cold account, not queue forever");
+    console.log("  ok  warm accounts are used exclusively until saturated, then cold takes overflow");
+}
+
 async function testReleaseIsBalanced() {
     const pool = makePool();
     const a = await pool.acquire("m");
@@ -146,6 +170,7 @@ async function testReleaseIsBalanced() {
         testCooldownExpires,
         testDeadAfterRepeatedCooldowns,
         testWarmPreferredOverCold,
+        testWarmUsedExclusivelyUntilSaturated,
         testReleaseIsBalanced,
     ];
     console.log("AccountPool invariants");

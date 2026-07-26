@@ -101,16 +101,23 @@ class AccountPool {
 
     /**
      * Pick the least-loaded account that is neither saturated nor cooling down.
-     * Warm accounts (live browser context) win over cold ones at equal load, and ties
-     * beyond that are broken by a rotating cursor so equally-loaded accounts share
-     * traffic evenly instead of always favouring the lowest index.
+     *
+     * Warm accounts (live context + socket) are strongly preferred: a cold account has to
+     * boot a browser context first, which takes tens of seconds and serialises behind other
+     * cold starts. With a rotation far larger than the context pool — 64 accounts against 10
+     * warm ones is normal — spreading requests evenly across the whole rotation would send
+     * most of them to cold accounts and stall them, so warm accounts are used exclusively
+     * whenever any has spare capacity. Cold accounts are only picked when every warm one is
+     * saturated, which is also what lets the pool grow beyond its warm set under load.
      */
     _select(model, now = Date.now()) {
         const candidates = this._candidateIndices();
         if (candidates.length === 0) return null;
 
-        let best = null;
-        let bestScore = Infinity;
+        let bestWarm = null;
+        let bestWarmLoad = Infinity;
+        let bestCold = null;
+        let bestColdLoad = Infinity;
 
         for (let offset = 0; offset < candidates.length; offset++) {
             const idx = candidates[(this._cursor + offset) % candidates.length];
@@ -119,17 +126,19 @@ class AccountPool {
             const load = this.getInFlight(idx);
             if (load >= this.maxPerAccount) continue;
 
-            // Cold accounts are ranked behind every warm account regardless of load.
-            const warm = this._isWarm ? this._isWarm(idx) : true;
-            const score = load + (warm ? 0 : this.maxPerAccount + 1);
-
-            if (score < bestScore) {
-                best = idx;
-                bestScore = score;
-                if (score === 0) break; // idle and warm — cannot do better
+            if (this._isWarm ? this._isWarm(idx) : true) {
+                if (load < bestWarmLoad) {
+                    bestWarm = idx;
+                    bestWarmLoad = load;
+                    if (load === 0) break; // idle and warm — cannot do better
+                }
+            } else if (load < bestColdLoad) {
+                bestCold = idx;
+                bestColdLoad = load;
             }
         }
 
+        const best = bestWarm !== null ? bestWarm : bestCold;
         if (best !== null) {
             const pos = candidates.indexOf(best);
             this._cursor = (pos + 1) % candidates.length;
