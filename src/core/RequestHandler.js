@@ -118,13 +118,24 @@ class RequestHandler {
                 }
                 const statusBefore = res.statusCode;
                 await this[handlerName](req, res);
-                if (authIndex !== null) {
-                    const status = Number(res.statusCode ?? statusBefore);
-                    if (Number.isFinite(status) && status >= 400) {
-                        this.accountPool.recordFailure(authIndex, model, status);
-                    } else {
-                        this.accountPool.recordSuccess(authIndex, model);
-                    }
+                if (authIndex === null) return;
+
+                // A client that hangs up mid-flight surfaces here as a 503, but the account
+                // did nothing wrong. Counting it as a failure would cool down healthy
+                // accounts whenever callers time out, shrinking the pool exactly when it is
+                // under load — so leave the account's record untouched.
+                if (res.__usageTrackingClientAborted) {
+                    this.logger.info(
+                        `[Pool] Client aborted on account #${authIndex}; not counting it against the account.`
+                    );
+                    return;
+                }
+
+                const status = Number(res.statusCode ?? statusBefore);
+                if (Number.isFinite(status) && status >= 400) {
+                    this.accountPool.recordFailure(authIndex, model, status);
+                } else {
+                    this.accountPool.recordSuccess(authIndex, model);
                 }
             });
         } catch (error) {
