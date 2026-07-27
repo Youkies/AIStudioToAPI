@@ -89,9 +89,19 @@
             >
                 <el-table-column type="selection" width="42" />
                 <el-table-column prop="email" label="账号" min-width="210" show-overflow-tooltip />
-                <el-table-column label="状态" width="110">
+                <el-table-column label="状态" width="130">
                     <template #default="{ row }">
-                        <el-tag v-if="row.last_status === 'success'" type="success" size="small">已登录</el-tag>
+                        <el-tag v-if="row.last_status === 'success' && row.terms_ok" type="success" size="small">
+                            已登录
+                        </el-tag>
+                        <el-tag
+                            v-else-if="row.last_status === 'success'"
+                            type="warning"
+                            size="small"
+                            :title="`条款未通过：${row.terms_stage} —— 该号所有请求会返回 403`"
+                        >
+                            条款未过
+                        </el-tag>
                         <el-tag v-else-if="row.last_status === 'failed'" type="danger" size="small">
                             失败 {{ row.consecutive_failures }}
                         </el-tag>

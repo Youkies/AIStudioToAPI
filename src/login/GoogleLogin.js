@@ -16,6 +16,8 @@ const crypto = require("crypto");
 const fs = require("fs");
 const { firefox } = require("playwright");
 
+const { ensureTermsAccepted } = require("./AiStudioTerms");
+
 const SIGNIN_URL = "https://accounts.google.com/signin";
 const MYACCOUNT_URL = "https://myaccount.google.com/";
 
@@ -183,18 +185,45 @@ class GoogleLogin {
                 });
             }
 
+            // Clear the AI Studio terms gate before the cookies are considered
+            // usable. An account that has never opened AI Studio answers 403
+            // PERMISSION_DENIED on every model call until the acknowledgement
+            // is accepted — valid cookies, permanently failing account.
+            //
+            // A failure here is reported but does not discard the session: the
+            // credential half worked, and throwing away a good login because
+            // the gate misbehaved would mean typing the password again for
+            // nothing. The caller decides whether to publish an ungated
+            // account; the queue records why.
+            note("terms", page);
+            const terms = await ensureTermsAccepted(page, { logger: this.logger });
+            if (!terms.ok) {
+                this.logger.warn(
+                    `[Login] ${account.email} signed in but the AI Studio gate is not cleared ` +
+                        `(${terms.stage}: ${terms.message || "no detail"}). It will answer 403 until it is.`
+                );
+                await this._fail(page, id, `terms_${terms.stage}`, stage, { termsMessage: terms.message });
+            } else {
+                this.logger.info(`[Login] ${account.email} AI Studio terms: ${terms.stage}`);
+            }
+
+            // Re-read: clearing the gate mints further cookies of its own.
+            const finalState = await ctx.storageState();
+
             note("done", page);
             const breakdown = Object.entries(timings)
                 .map(([k, v]) => `${k}=${(v / 1000).toFixed(1)}s`)
                 .join(" ");
             this.logger.info(
-                `✅ [Login] ${account.email} signed in (${storageState.cookies.length} cookies). ${breakdown}`
+                `✅ [Login] ${account.email} signed in (${finalState.cookies.length} cookies). ${breakdown}`
             );
             return {
-                cookies: storageState.cookies,
+                cookies: finalState.cookies,
                 ok: true,
                 stage: "done",
-                storageState,
+                storageState: finalState,
+                termsOk: terms.ok,
+                termsStage: terms.stage,
                 timings,
             };
         } catch (err) {

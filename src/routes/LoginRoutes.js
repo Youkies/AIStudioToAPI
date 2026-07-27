@@ -54,6 +54,8 @@ class LoginRoutes {
                 proxy: r.proxy_host ? `${r.proxy_host}:${r.proxy_port}` : "",
                 published_at: r.published_at || 0,
                 recovery_email: r.recovery_email || "",
+                terms_ok: r.terms_ok !== false,
+                terms_stage: r.terms_stage || "",
             }));
             res.json({ accounts: rows, total: rows.length });
         });

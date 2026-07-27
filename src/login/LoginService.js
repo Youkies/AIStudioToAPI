@@ -107,6 +107,17 @@ class LoginService {
             ok: result.ok,
             stage: result.stage,
         });
+        // An account that signed in but never cleared the gate will answer 403
+        // on every call. Recording it separately from a login failure is what
+        // lets the page say "re-run the terms step" instead of "log in again".
+        if (result.ok) {
+            const rec2 = this.store.get(email);
+            if (rec2) {
+                rec2.terms_ok = result.termsOk !== false;
+                rec2.terms_stage = result.termsStage || "";
+                this.store.save();
+            }
+        }
         return result;
     }
 
