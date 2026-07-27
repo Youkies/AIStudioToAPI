@@ -27,6 +27,12 @@ auth-*.json
 users.csv
 cache/
 
+# Credential store — plaintext passwords and TOTP seeds. It lives under
+# configs/auth/ (the only persistent volume) but is spelled out here too so a
+# stray copy elsewhere cannot be committed by accident.
+configs/accounts.json
+**/_accounts.json
+
 # Usage statistics data
 data/
 

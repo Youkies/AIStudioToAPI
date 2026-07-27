@@ -18,6 +18,7 @@ const { URL } = require("url");
 const LoggingService = require("../utils/LoggingService");
 const AuthSource = require("../auth/AuthSource");
 const AccountPool = require("../auth/AccountPool");
+const { LoginService } = require("../login/LoginService");
 const BrowserManager = require("./BrowserManager");
 const ConnectionRegistry = require("./ConnectionRegistry");
 const RequestHandler = require("./RequestHandler");
@@ -118,6 +119,32 @@ class ProxyServerSystem extends EventEmitter {
 
         this.httpServer = null;
         this.wsServer = null;
+
+        // Refreshing an expired account needs the pool (to lift its cooldown),
+        // the auth source (to reload the file it just rewrote) and the browser
+        // manager — so it is built here, after all three exist. A failure to
+        // construct it must not take the proxy down: the API keeps serving
+        // whatever accounts are still valid, only self-healing is lost.
+        try {
+            this.loginService = new LoginService({
+                accountPool: this.accountPool,
+                authSource: this.authSource,
+                browserManager: this.browserManager,
+                logger: this.logger,
+                settings: {
+                    breakerThreshold: Number(process.env.LOGIN_BREAKER_THRESHOLD) || 3,
+                    concurrency: Number(process.env.LOGIN_CONCURRENCY) || 1,
+                    headless: process.env.LOGIN_HEADLESS !== "false",
+                    mode: process.env.LOGIN_QUEUE_MODE === "auto" ? "auto" : "manual",
+                    perAccountTimeoutMs: Number(process.env.LOGIN_TIMEOUT_MS) || 300000,
+                },
+            });
+            this.logger.info("[System] Login service ready.");
+        } catch (err) {
+            this.loginService = null;
+            this.logger.error(`[System] Login service unavailable: ${err.message}`);
+        }
+
         this.webRoutes = new WebRoutes(this);
     }
 

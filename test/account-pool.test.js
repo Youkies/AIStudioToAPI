@@ -158,6 +158,25 @@ async function testReleaseIsBalanced() {
     console.log("  ok  release never drives in-flight below zero");
 }
 
+async function testClearCooldownsAfterRelogin() {
+    const pool = makePool();
+    // Two rounds of 401 leave the account cooling and one round from dead.
+    pool.recordFailure(0, "m", 401);
+    pool.recordFailure(0, "m", 401);
+    assert.strictEqual(pool.isCoolingDown(0, "m"), true);
+
+    const lifted = pool.clearCooldowns(0);
+    assert.ok(lifted > 0, "expected at least one cooldown to be lifted");
+    assert.strictEqual(pool.isCoolingDown(0, "m"), false);
+
+    // The round counter must reset too: otherwise the next single failure
+    // resumes at round 3 of 3 and retires an account that just came back.
+    const after = pool.recordFailure(0, "m", 401);
+    assert.strictEqual(after.cooled, true, "fresh failure should cool again");
+    assert.strictEqual(after.dead, false, "counter must restart, not resume at round 3");
+    console.log("  ok  re-login clears cooldowns and the escalation counter");
+}
+
 (async () => {
     const tests = [
         testSpreadsAcrossAccounts,
@@ -172,6 +191,7 @@ async function testReleaseIsBalanced() {
         testWarmPreferredOverCold,
         testWarmUsedExclusivelyUntilSaturated,
         testReleaseIsBalanced,
+        testClearCooldownsAfterRelogin,
     ];
     console.log("AccountPool invariants");
     for (const t of tests) await t();

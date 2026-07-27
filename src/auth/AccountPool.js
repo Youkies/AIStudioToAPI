@@ -215,6 +215,40 @@ class AccountPool {
     }
 
     /**
+     * Forget every failure verdict recorded against an account.
+     *
+     * Called after fresh credentials land: the cooldown was earned by a session
+     * that no longer exists, so serving out the remainder of it benches a
+     * working account for nothing. `cooldownRounds` has to go too — leaving it
+     * would start the next cooldown at round 2 of 3 and retire the account
+     * after a single unlucky failure.
+     *
+     * @returns {number} How many cooldown entries were lifted.
+     */
+    clearCooldowns(authIndex) {
+        const prefix = `${authIndex}|`;
+        let cleared = 0;
+        for (const key of [...this.cooldowns.keys()]) {
+            if (key.startsWith(prefix)) {
+                this.cooldowns.delete(key);
+                cleared += 1;
+            }
+        }
+        for (const key of [...this.cooldownRounds.keys()]) {
+            if (key.startsWith(prefix)) this.cooldownRounds.delete(key);
+        }
+        for (const key of [...this.softFailures.keys()]) {
+            if (key.startsWith(prefix)) this.softFailures.delete(key);
+        }
+        if (cleared) {
+            this.logger.info(
+                `♻️ [Pool] Account #${authIndex} back in rotation: ${cleared} cooldown(s) lifted after re-login.`
+            );
+        }
+        return cleared;
+    }
+
+    /**
      * Record a failure and cool the account down if warranted.
      *
      * 401/403 mean the credential is rejected outright, so the account is cooled on the

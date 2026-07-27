@@ -9,6 +9,7 @@ import { createRouter, createWebHistory } from 'vue-router';
 import LoginPage from '../pages/LoginPage.vue';
 import StatusPage from '../pages/StatusPage.vue';
 import AuthPage from '../pages/AuthPage.vue';
+import AccountsPage from '../pages/AccountsPage.vue';
 import NotFound from '../pages/NotFound.vue';
 
 const routes = [
@@ -26,6 +27,11 @@ const routes = [
         component: AuthPage,
         name: 'auth',
         path: '/auth',
+    },
+    {
+        component: AccountsPage,
+        name: 'accounts',
+        path: '/accounts',
     },
     {
         component: NotFound,
