@@ -54,7 +54,10 @@ class LoginRoutes {
                 proxy: r.proxy_host ? `${r.proxy_host}:${r.proxy_port}` : "",
                 published_at: r.published_at || 0,
                 recovery_email: r.recovery_email || "",
-                terms_ok: r.terms_ok !== false,
+                // Absent means the account predates the terms step — treat that
+                // as "not cleared" rather than "fine", or every account logged
+                // in before the fix reports healthy while answering 403.
+                terms_ok: r.terms_ok === true,
                 terms_stage: r.terms_stage || "",
             }));
             res.json({ accounts: rows, total: rows.length });

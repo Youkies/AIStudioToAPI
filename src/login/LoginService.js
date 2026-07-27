@@ -113,7 +113,7 @@ class LoginService {
         if (result.ok) {
             const rec2 = this.store.get(email);
             if (rec2) {
-                rec2.terms_ok = result.termsOk !== false;
+                rec2.terms_ok = result.termsOk === true;
                 rec2.terms_stage = result.termsStage || "";
                 this.store.save();
             }
