@@ -28,6 +28,10 @@ const readState = gateText => {
     const boxes = [...document.querySelectorAll("mat-checkbox.tos-option")];
     const body = document.body ? document.body.innerText || "" : "";
     return {
+        // Google's own cookie banner, distinct from AI Studio's terms gate. It
+        // is modal, so the editor renders behind it and looks ready while every
+        // interaction — including the injected client's requests — is blocked.
+        cookieBanner: /uses cookies to deliver|cookies are also used to serve advertising/i.test(body),
         gate: boxes.length > 0,
         gateText: body.includes(gateText),
         ready: !!document.querySelector("ms-prompt-input-wrapper, textarea, [contenteditable=true]"),
@@ -39,6 +43,25 @@ const readState = gateText => {
         signinRedirect: location.href.includes("accounts.google.com"),
         url: location.href,
     };
+};
+
+/**
+ * Dismiss Google's cookie consent banner.
+ *
+ * "No thanks" is preferred over "Agree": it declines the advertising cookies
+ * and clears the banner just the same.
+ */
+const dismissCookieBanner = () => {
+    const labels = ["No thanks", "Reject all", "拒绝", "Agree", "Accept all"];
+    const buttons = [...document.querySelectorAll("button")];
+    for (const label of labels) {
+        const b = buttons.find(x => (x.innerText || "").trim().toLowerCase() === label.toLowerCase());
+        if (b) {
+            b.click();
+            return { clicked: label, ok: true };
+        }
+    }
+    return { err: "no_button", ok: false };
 };
 
 const acceptGate = () => {
@@ -99,6 +122,24 @@ async function ensureTermsAccepted(page, { logger, attempts = 3, settleMs = 8000
 
         if (state.signinRedirect) return { message: state.url, ok: false, stage: "signin_redirect" };
         if (state.regionBlocked) return { message: state.url, ok: false, stage: "region_blocked" };
+
+        // Clear the cookie banner first: it is modal, so the terms gate behind
+        // it cannot be clicked, and an editor that renders behind it reports
+        // ready while refusing every interaction.
+        if (state.cookieBanner) {
+            const dismissed = await page.evaluate(dismissCookieBanner).catch(() => ({ err: "eval_failed", ok: false }));
+            logger?.info?.(
+                dismissed.ok
+                    ? `[Terms] cookie banner dismissed via "${dismissed.clicked}"`
+                    : `[Terms] cookie banner present but no button matched (${dismissed.err})`
+            );
+            if (dismissed.ok) {
+                await sleep(2500);
+                // Re-read: dismissing it can reveal the terms gate underneath.
+                const after = await page.evaluate(readState, GATE_TEXT).catch(() => ({}));
+                Object.assign(state, after);
+            }
+        }
 
         if (state.ready && !state.gate) return { ok: true, stage: "already_accepted" };
 

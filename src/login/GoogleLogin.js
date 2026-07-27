@@ -189,14 +189,22 @@ class GoogleLogin {
             // usable. An account that has never opened AI Studio answers 403
             // PERMISSION_DENIED on every model call until the acknowledgement
             // is accepted — valid cookies, permanently failing account.
-            //
-            // A failure here is reported but does not discard the session: the
-            // credential half worked, and throwing away a good login because
-            // the gate misbehaved would mean typing the password again for
-            // nothing. The caller decides whether to publish an ungated
-            // account; the queue records why.
             note("terms", page);
             const terms = await ensureTermsAccepted(page, { logger: this.logger });
+
+            // Two kinds of failure, two answers. A gate that misbehaved is worth
+            // retrying and the session is worth keeping — throwing it away means
+            // typing the password again for nothing. But an exit IP in a region
+            // without Gemini can never serve a request no matter how often it is
+            // re-logged, so it fails the login and stays out of the rotation
+            // until the account is given a different proxy.
+            if (terms.stage === "region_blocked") {
+                this.logger.error(
+                    `🚫 [Login] ${account.email}: exit IP has no Gemini access (${terms.message}). ` +
+                        `The account needs a different proxy — re-logging in will not help.`
+                );
+                return await this._fail(page, id, "region_blocked", stage, { landed: terms.message });
+            }
             if (!terms.ok) {
                 this.logger.warn(
                     `[Login] ${account.email} signed in but the AI Studio gate is not cleared ` +
