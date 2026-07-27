@@ -157,8 +157,38 @@ class LoginService {
         // though the credential that caused it is gone.
         this.accountPool?.clearCooldowns?.(index);
 
+        // Reloading the auth file is not enough: a live context is still driving
+        // a browser holding the session this login just replaced, so it keeps
+        // answering with the state we were trying to fix. Dropping it makes the
+        // next request build a fresh one from the new cookies.
+        await this._recycleContext(index, rec.email);
+
         this.logger.info(`[LoginService] Published ${rec.email} → ${filename}${proxyLine ? " (with proxy)" : ""}`);
         return filename;
+    }
+
+    /**
+     * Drop the browser context still running on the credentials we replaced.
+     *
+     * Rebuilding is left to the request path rather than done here: the pool is
+     * capped, so forcing one open now could evict a context that is busy
+     * serving, and a re-logged account is not necessarily one that is about to
+     * be used. The close itself defers while requests are in flight.
+     */
+    async _recycleContext(authIndex, email) {
+        const bm = this.browserManager;
+        if (!bm?.contexts?.has?.(authIndex)) return false;
+
+        try {
+            await bm._closeContextForPoolIfPossible(authIndex, "relogin");
+            this.logger.info(`[LoginService] Recycled context #${authIndex} (${email}) onto the new session.`);
+            return true;
+        } catch (err) {
+            // The account is published either way; a stale context only costs
+            // it the requests it fails until the pool rebalances.
+            this.logger.warn(`[LoginService] Could not recycle context #${authIndex}: ${err.message}`);
+            return false;
+        }
     }
 
     /**

@@ -154,6 +154,32 @@ class LoginRoutes {
             res.json({ ok: true, settings: this.service.queue.updateSettings(req.body || {}) });
         });
 
+        // Drop live contexts so they rebuild from whatever is on disk now.
+        // Needed when auth files changed outside a login — after a fix that
+        // required re-running a batch, say — since nothing else tells the
+        // browser its session is stale.
+        app.post("/api/login/contexts/recycle", isAuthenticated, guard, async (req, res) => {
+            const bm = this.serverSystem.browserManager;
+            if (!bm?.contexts) return res.status(503).json({ error: "Browser manager unavailable" });
+
+            const requested = Array.isArray(req.body?.indices) ? req.body.indices : null;
+            const live = [...bm.contexts.keys()];
+            const targets = requested ? live.filter(i => requested.includes(i)) : live;
+
+            const recycled = [];
+            for (const idx of targets) {
+                try {
+                    await bm._closeContextForPoolIfPossible(idx, "manual_recycle");
+                    this.service.accountPool?.clearCooldowns?.(idx);
+                    recycled.push(idx);
+                } catch (err) {
+                    this.logger.warn(`[LoginRoutes] Recycle of context #${idx} failed: ${err.message}`);
+                }
+            }
+            this.logger.info(`[LoginRoutes] Recycled ${recycled.length} context(s): [${recycled.join(", ")}]`);
+            res.json({ ok: true, recycled, skipped: targets.filter(i => !recycled.includes(i)) });
+        });
+
         // --- diagnostics (read-only) ----------------------------------------
 
         app.get("/api/login/attempts/:attemptId", isAuthenticated, guard, (req, res) => {
