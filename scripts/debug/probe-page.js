@@ -59,7 +59,10 @@ function parseProxy(line) {
             console.log(`exit IP: unreachable (${String(err).slice(0, 80)})`);
         }
 
-        await page.goto("https://aistudio.google.com/", { timeout: 90000, waitUntil: "domcontentloaded" });
+        // The Build App the proxy actually drives, not the AI Studio home page:
+        // an account can reach the app shell and still be unable to open this.
+        const target = process.env.PROBE_URL || "https://ai.studio/apps/cab9ab6c-44f9-4e7a-8972-037f8ae177ab";
+        await page.goto(target, { timeout: 90000, waitUntil: "domcontentloaded" });
         await new Promise(r => setTimeout(r, 12000));
 
         console.log(`URL: ${page.url()}`);
